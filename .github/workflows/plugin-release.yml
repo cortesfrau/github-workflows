@@ -1,0 +1,135 @@
+name: Reusable Plugin Release Workflow
+
+on:
+  workflow_call:
+    inputs:
+      has_composer:
+        required: false
+        type: boolean
+        default: false
+        description: "Whether plugin has composer dependencies"
+      php_version:
+        required: false
+        type: string
+        default: "8.4"
+        description: "PHP version to use for composer"
+      has_package_json:
+        required: false
+        type: boolean
+        default: false
+        description: "Whether plugin has package.json dependencies"
+      node_version:
+        required: false
+        type: string
+        default: "22"
+        description: "Node.js version to use for npm"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a tag
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          echo "::error::This workflow only publishes a release from a tag (refs/tags/*)."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        if: ${{ inputs.has_composer }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php_version }}
+          tools: composer
+          coverage: none
+
+      - name: Setup Node.js
+        if: ${{ inputs.has_package_json }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: "npm"
+
+      - name: Configure Composer auth for private repos
+        if: ${{ inputs.has_composer }}
+        env:
+          COMPOSER_TOKEN: ${{ secrets.LCF_COMPOSER_GITHUB_TOKEN }}
+        run: |
+          if [ -n "$COMPOSER_TOKEN" ]; then
+            composer config --global github-oauth.github.com "$COMPOSER_TOKEN"
+          fi
+
+      - name: Install PHP dependencies
+        if: ${{ inputs.has_composer }}
+        run: |
+          if [ ! -f composer.lock ]; then
+            echo "::error::composer.lock is required for a reproducible release."
+            exit 1
+          fi
+          composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
+
+      - name: Install npm dependencies
+        if: ${{ inputs.has_package_json }}
+        run: npm ci
+
+      - name: Build assets
+        if: ${{ inputs.has_package_json }}
+        run: npm run build
+
+      - name: Prepare zip
+        env:
+          PLUGIN_SLUG: ${{ github.event.repository.name }}
+        run: |
+          # The zip file is plugin-slug-1.2.0.zip. A leading "v" on the tag is dropped.
+          # The directory inside stays plugin-slug/, without the version, so WordPress
+          # installs and updates it in the same folder.
+          # tools/ and vendor/composer/autoload_aliases.php are Strauss build artifacts
+          # (the pinned strauss.phar and the dev-only class-alias shim). Neither belongs in
+          # a release; the exclusions are no-ops for plugins that don't use Strauss.
+          stage="/tmp/plugin-stage/${PLUGIN_SLUG}"
+          mkdir -p "$stage"
+          rsync -a \
+            --exclude '.git/' \
+            --exclude '.gitignore' \
+            --exclude '.github/' \
+            --exclude '.vscode/' \
+            --exclude 'tests/' \
+            --exclude 'screenshots/' \
+            --exclude '*.md' \
+            --exclude '*.yml' \
+            --exclude '*.yaml' \
+            --exclude '.env' \
+            --exclude 'node_modules/' \
+            --exclude 'bin/' \
+            --exclude 'tools/' \
+            --exclude 'vendor/bin/' \
+            --exclude 'vendor/composer/autoload_aliases.php' \
+            --exclude 'package-lock.json' \
+            --exclude 'package.json' \
+            --exclude 'vite.config.mjs' \
+            --exclude 'composer.json' \
+            --exclude 'composer.lock' \
+            --exclude 'phpstan.neon' \
+            --exclude 'phpunit.xml' \
+            --exclude '.php-cs-fixer.php' \
+            --exclude '.php-cs-fixer.cache' \
+            ./ "$stage/"
+          version="${GITHUB_REF_NAME#v}"
+          zip_path="/tmp/${PLUGIN_SLUG}-${version}.zip"
+          (
+            cd /tmp/plugin-stage
+            zip -r "$zip_path" "$PLUGIN_SLUG"
+          )
+          echo "ZIP_PATH=${zip_path}" >> "$GITHUB_ENV"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
