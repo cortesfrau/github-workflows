@@ -27,6 +27,7 @@ Installs dependencies without `--dev`, runs the asset build if applicable, then 
 | `has_package_json` | boolean | `false` | Install npm dependencies and run `npm run build` before zipping |
 | `php_version`      | string  | `"8.4"` | PHP version to use for Composer                                 |
 | `node_version`     | string  | `"22"`  | Node.js version to use for npm                                  |
+| `exclude`          | string  | `""`    | Extra rsync exclude patterns (one per line or comma-separated). Added to the default list. |
 
 **Always excluded from the zip:**
 
@@ -78,6 +79,8 @@ jobs:
     with:
       has_composer: true
       has_package_json: true
+      exclude: |
+        resources/
     secrets: inherit
 ```
 

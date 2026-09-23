@@ -23,6 +23,11 @@ on:
         type: string
         default: "22"
         description: "Node.js version to use for npm"
+      exclude:
+        required: false
+        type: string
+        default: ""
+        description: "Extra rsync exclude patterns, one per line or comma-separated. Added to the default list."
 
 permissions:
   contents: write
@@ -84,6 +89,7 @@ jobs:
       - name: Prepare zip
         env:
           PLUGIN_SLUG: ${{ github.event.repository.name }}
+          EXTRA_EXCLUDES: ${{ inputs.exclude }}
         run: |
           # The zip file is plugin-slug-1.2.0.zip. A leading "v" on the tag is dropped.
           # The directory inside stays plugin-slug/, without the version, so WordPress
@@ -91,6 +97,15 @@ jobs:
           # tools/ and vendor/composer/autoload_aliases.php are Strauss build artifacts
           # (the pinned strauss.phar and the dev-only class-alias shim). Neither belongs in
           # a release; the exclusions are no-ops for plugins that don't use Strauss.
+          extra_excludes=()
+          while IFS= read -r pattern; do
+            pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+            pattern="${pattern%"${pattern##*[![:space:]]}"}"
+            pattern="${pattern%,}"
+            [ -z "$pattern" ] && continue
+            extra_excludes+=(--exclude "$pattern")
+          done <<< "${EXTRA_EXCLUDES//,/$'\n'}"
+
           stage="/tmp/plugin-stage/${PLUGIN_SLUG}"
           mkdir -p "$stage"
           rsync -a \
@@ -118,6 +133,7 @@ jobs:
             --exclude 'phpunit.xml' \
             --exclude '.php-cs-fixer.php' \
             --exclude '.php-cs-fixer.cache' \
+            "${extra_excludes[@]}" \
             ./ "$stage/"
           version="${GITHUB_REF_NAME#v}"
           zip_path="/tmp/${PLUGIN_SLUG}-${version}.zip"
