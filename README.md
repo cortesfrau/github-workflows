@@ -10,7 +10,7 @@ Builds a production zip and creates a GitHub Release with it attached. Works for
 
 Installs dependencies without `--dev`, runs the asset build if applicable, then zips the result excluding all development files. The file is named `package-name-1.2.0.zip`; a leading `v` on the tag is dropped. The archive contains a single top-level directory named after the repository, without the version, which WordPress needs in order to install and update the package in place. A Composer release requires `composer.lock`; the job fails if it is missing. The workflow only publishes when the caller ref is a tag.
 
-Theme `screenshot.png` at the repo root is included. The `screenshots/` directory (plugin directory assets) is excluded. Front-end source under `src/` is excluded after the build; only compiled assets ship.
+Theme `screenshot.png` at the repo root is included. The `screenshots/` directory (plugin directory assets) is excluded. `src/` is **not** excluded by default (many plugins ship PHP there via PSR-4). If `src/` is only front-end source (SCSS/JS) and the build outputs to e.g. `dist/`, pass it via `exclude`.
 
 **Inputs:**
 
@@ -24,7 +24,7 @@ Theme `screenshot.png` at the repo root is included. The `screenshots/` director
 
 **Always excluded from the zip:**
 
-`.git/` `.github/` `.vscode/` `.DS_Store` `tests/` `bin/` `tools/` `src/` `vendor/bin/` `vendor/composer/autoload_aliases.php` `node_modules/` `screenshots/` `*.md` `*.yml` `*.yaml` `.gitignore` `.env` `composer.json` `composer.lock` `package.json` `package-lock.json` `phpstan.neon` `phpunit.xml` `.php-cs-fixer.php` `.php-cs-fixer.cache` `vite.config.mjs`
+`.git/` `.github/` `.vscode/` `.DS_Store` `tests/` `bin/` `tools/` `vendor/bin/` `vendor/composer/autoload_aliases.php` `node_modules/` `screenshots/` `*.md` `*.yml` `*.yaml` `.gitignore` `.env` `composer.json` `composer.lock` `package.json` `package-lock.json` `phpstan.neon` `phpunit.xml` `.php-cs-fixer.php` `.php-cs-fixer.cache` `vite.config.mjs`
 
 **Usage — PHP plugin with no assets:**
 
@@ -47,7 +47,7 @@ jobs:
     secrets: inherit
 ```
 
-**Usage — theme or plugin with built assets:**
+**Usage — theme with Vite assets (`src/` is front-end only):**
 
 ```yaml
 name: Build release
@@ -65,6 +65,8 @@ jobs:
     uses: cortesfrau/github-workflows/.github/workflows/wp-release.yml@main
     with:
       has_package_json: true
+      exclude: |
+        src/
     secrets: inherit
 ```
 

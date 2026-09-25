@@ -97,7 +97,8 @@ jobs:
           # tools/ and vendor/composer/autoload_aliases.php are Strauss build artifacts
           # (the pinned strauss.phar and the dev-only class-alias shim). Neither belongs in
           # a release; the exclusions are no-ops for packages that don't use Strauss.
-          # src/ is front-end source (SCSS/JS); only built assets (e.g. dist/) ship.
+          # Do not exclude src/ by default: many plugins ship PHP under src/ (PSR-4).
+          # Callers that use src/ only for front-end source should pass exclude: src/.
           extra_excludes=()
           while IFS= read -r pattern; do
             pattern="${pattern#"${pattern%%[![:space:]]*}"}"
@@ -117,7 +118,6 @@ jobs:
             --exclude '.DS_Store' \
             --exclude 'tests/' \
             --exclude 'screenshots/' \
-            --exclude 'src/' \
             --exclude '*.md' \
             --exclude '*.yml' \
             --exclude '*.yaml' \
