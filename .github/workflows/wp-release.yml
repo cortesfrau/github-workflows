@@ -1,4 +1,4 @@
-name: Reusable Plugin Release Workflow
+name: Reusable WordPress Package Release Workflow
 
 on:
   workflow_call:
@@ -7,7 +7,7 @@ on:
         required: false
         type: boolean
         default: false
-        description: "Whether plugin has composer dependencies"
+        description: "Whether the package has composer dependencies"
       php_version:
         required: false
         type: string
@@ -17,7 +17,7 @@ on:
         required: false
         type: boolean
         default: false
-        description: "Whether plugin has package.json dependencies"
+        description: "Whether the package has package.json dependencies"
       node_version:
         required: false
         type: string
@@ -88,15 +88,16 @@ jobs:
 
       - name: Prepare zip
         env:
-          PLUGIN_SLUG: ${{ github.event.repository.name }}
+          PACKAGE_SLUG: ${{ github.event.repository.name }}
           EXTRA_EXCLUDES: ${{ inputs.exclude }}
         run: |
-          # The zip file is plugin-slug-1.2.0.zip. A leading "v" on the tag is dropped.
-          # The directory inside stays plugin-slug/, without the version, so WordPress
-          # installs and updates it in the same folder.
+          # The zip file is package-slug-1.2.0.zip. A leading "v" on the tag is dropped.
+          # The directory inside stays package-slug/, without the version, so WordPress
+          # installs and updates plugins and themes in the same folder.
           # tools/ and vendor/composer/autoload_aliases.php are Strauss build artifacts
           # (the pinned strauss.phar and the dev-only class-alias shim). Neither belongs in
-          # a release; the exclusions are no-ops for plugins that don't use Strauss.
+          # a release; the exclusions are no-ops for packages that don't use Strauss.
+          # src/ is front-end source (SCSS/JS); only built assets (e.g. dist/) ship.
           extra_excludes=()
           while IFS= read -r pattern; do
             pattern="${pattern#"${pattern%%[![:space:]]*}"}"
@@ -106,15 +107,17 @@ jobs:
             extra_excludes+=(--exclude "$pattern")
           done <<< "${EXTRA_EXCLUDES//,/$'\n'}"
 
-          stage="/tmp/plugin-stage/${PLUGIN_SLUG}"
+          stage="/tmp/wp-package-stage/${PACKAGE_SLUG}"
           mkdir -p "$stage"
           rsync -a \
             --exclude '.git/' \
             --exclude '.gitignore' \
             --exclude '.github/' \
             --exclude '.vscode/' \
+            --exclude '.DS_Store' \
             --exclude 'tests/' \
             --exclude 'screenshots/' \
+            --exclude 'src/' \
             --exclude '*.md' \
             --exclude '*.yml' \
             --exclude '*.yaml' \
@@ -136,10 +139,10 @@ jobs:
             "${extra_excludes[@]}" \
             ./ "$stage/"
           version="${GITHUB_REF_NAME#v}"
-          zip_path="/tmp/${PLUGIN_SLUG}-${version}.zip"
+          zip_path="/tmp/${PACKAGE_SLUG}-${version}.zip"
           (
-            cd /tmp/plugin-stage
-            zip -r "$zip_path" "$PLUGIN_SLUG"
+            cd /tmp/wp-package-stage
+            zip -r "$zip_path" "$PACKAGE_SLUG"
           )
           echo "ZIP_PATH=${zip_path}" >> "$GITHUB_ENV"
 
