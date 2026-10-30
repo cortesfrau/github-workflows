@@ -3,11 +3,14 @@ name: Reusable WordPress Package Release Workflow
 on:
   workflow_call:
     inputs:
+      # Deprecated in v2: Composer and npm are detected from composer.json and package.json.
+      # Kept so callers still passing them don't fail; they have no effect and the run
+      # shows a warning asking to remove them.
       has_composer:
         required: false
         type: boolean
         default: false
-        description: "Whether the package has composer dependencies"
+        description: "Deprecated, no effect: Composer is detected from composer.json."
       php_version:
         required: false
         type: string
@@ -17,7 +20,7 @@ on:
         required: false
         type: boolean
         default: false
-        description: "Whether the package has package.json dependencies"
+        description: "Deprecated, no effect: npm is detected from package.json."
       node_version:
         required: false
         type: string
@@ -45,8 +48,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect Composer and npm
+        id: detect
+        run: |
+          composer=false; npm=false
+          [ -f composer.json ] && composer=true
+          [ -f package.json ] && npm=true
+          echo "composer=$composer" >> "$GITHUB_OUTPUT"
+          echo "npm=$npm" >> "$GITHUB_OUTPUT"
+          echo "Composer: $composer, npm: $npm"
+          if [ "${{ inputs.has_composer }}" = "true" ] || [ "${{ inputs.has_package_json }}" = "true" ]; then
+            echo "::warning::has_composer and has_package_json have no effect since v2 (detected from composer.json and package.json). Remove them from the caller workflow."
+          fi
+
       - name: Setup PHP
-        if: ${{ inputs.has_composer }}
+        if: steps.detect.outputs.composer == 'true'
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ inputs.php_version }}
@@ -54,14 +70,14 @@ jobs:
           coverage: none
 
       - name: Setup Node.js
-        if: ${{ inputs.has_package_json }}
+        if: steps.detect.outputs.npm == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
           cache: "npm"
 
       - name: Configure Composer auth for private repos
-        if: ${{ inputs.has_composer }}
+        if: steps.detect.outputs.composer == 'true'
         env:
           COMPOSER_TOKEN: ${{ secrets.LCF_COMPOSER_GITHUB_TOKEN }}
         run: |
@@ -70,7 +86,7 @@ jobs:
           fi
 
       - name: Install PHP dependencies
-        if: ${{ inputs.has_composer }}
+        if: steps.detect.outputs.composer == 'true'
         run: |
           if [ ! -f composer.lock ]; then
             echo "::error::composer.lock is required for a reproducible release."
@@ -79,12 +95,12 @@ jobs:
           composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
 
       - name: Install npm dependencies
-        if: ${{ inputs.has_package_json }}
+        if: steps.detect.outputs.npm == 'true'
         run: npm ci
 
       - name: Build assets
-        if: ${{ inputs.has_package_json }}
-        run: npm run build
+        if: steps.detect.outputs.npm == 'true'
+        run: npm run build --if-present
 
       - name: Prepare zip
         env:
