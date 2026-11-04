@@ -3,34 +3,16 @@ name: Reusable WordPress Package Release Workflow
 on:
   workflow_call:
     inputs:
-      # Deprecated in v2: Composer and npm are detected from composer.json and package.json.
-      # Kept so callers still passing them don't fail; they have no effect and the run
-      # shows a warning asking to remove them.
-      has_composer:
-        required: false
-        type: boolean
-        default: false
-        description: "Deprecated, no effect: Composer is detected from composer.json."
       php_version:
         required: false
         type: string
         default: "8.4"
         description: "PHP version to use for composer"
-      has_package_json:
-        required: false
-        type: boolean
-        default: false
-        description: "Deprecated, no effect: npm is detected from package.json."
       node_version:
         required: false
         type: string
-        default: "22"
-        description: "Node.js version to use for npm"
-      exclude:
-        required: false
-        type: string
         default: ""
-        description: "Extra rsync exclude patterns, one per line or comma-separated. Added to the default list."
+        description: "Node.js version to use for npm. Empty: .nvmrc if the repo has one, otherwise 24."
 
 permissions:
   contents: write
@@ -46,24 +28,72 @@ jobs:
           exit 1
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history, so the next step can check the tag against the default branch.
+          fetch-depth: 0
 
-      - name: Detect Composer and npm
-        id: detect
+      - name: Require the tag on the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          # Only code merged into the default branch is released. A tag pushed from
+          # another branch would ship unreviewed code, and its changes would be
+          # missing from the next release made from the default branch.
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" "origin/${DEFAULT_BRANCH}"; then
+            echo "::error::Tag ${GITHUB_REF_NAME} points to a commit that is not on ${DEFAULT_BRANCH}. Merge into ${DEFAULT_BRANCH} first, then tag from ${DEFAULT_BRANCH}."
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} is on ${DEFAULT_BRANCH}."
+
+      - name: Check repository and detect tooling
+        id: detect
+        env:
+          NODE_VERSION_INPUT: ${{ inputs.node_version }}
+        run: |
+          if [ ! -f .distignore ]; then
+            echo "::error::.distignore is required. Copy templates/.distignore from cortesfrau/github-workflows to the repo root and adjust it."
+            exit 1
+          fi
+
           composer=false; npm=false
-          [ -f composer.json ] && composer=true
-          [ -f package.json ] && npm=true
+          if [ -f composer.json ]; then
+            composer=true
+            if [ ! -f composer.lock ]; then
+              echo "::error::composer.lock is required for a reproducible release."
+              exit 1
+            fi
+          fi
+          if [ -f package.json ]; then
+            npm=true
+            if [ ! -f package-lock.json ]; then
+              echo "::error::package-lock.json is required for a reproducible release (npm ci)."
+              exit 1
+            fi
+          fi
           echo "composer=$composer" >> "$GITHUB_OUTPUT"
           echo "npm=$npm" >> "$GITHUB_OUTPUT"
           echo "Composer: $composer, npm: $npm"
-          if [ "${{ inputs.has_composer }}" = "true" ] || [ "${{ inputs.has_package_json }}" = "true" ]; then
-            echo "::warning::has_composer and has_package_json have no effect since v2 (detected from composer.json and package.json). Remove them from the caller workflow."
+
+          # Node.js version: the node_version input, then .nvmrc, then 24.
+          # Only one of node_version / node_version_file is set, so setup-node
+          # never has to choose between them.
+          if [ "$npm" = "true" ]; then
+            if [ -n "$NODE_VERSION_INPUT" ]; then
+              echo "node_version=$NODE_VERSION_INPUT" >> "$GITHUB_OUTPUT"
+              echo "Node.js: $NODE_VERSION_INPUT (node_version input)"
+            elif [ -f .nvmrc ]; then
+              echo "node_version_file=.nvmrc" >> "$GITHUB_OUTPUT"
+              echo "Node.js: $(tr -d '[:space:]' < .nvmrc) (.nvmrc)"
+            else
+              echo "node_version=24" >> "$GITHUB_OUTPUT"
+              echo "Node.js: 24 (default)"
+            fi
           fi
 
       - name: Setup PHP
         if: steps.detect.outputs.composer == 'true'
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: ${{ inputs.php_version }}
           tools: composer
@@ -71,9 +101,10 @@ jobs:
 
       - name: Setup Node.js
         if: steps.detect.outputs.npm == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ inputs.node_version }}
+          node-version: ${{ steps.detect.outputs.node_version }}
+          node-version-file: ${{ steps.detect.outputs.node_version_file }}
           cache: "npm"
 
       - name: Configure Composer auth for private repos
@@ -87,12 +118,7 @@ jobs:
 
       - name: Install PHP dependencies
         if: steps.detect.outputs.composer == 'true'
-        run: |
-          if [ ! -f composer.lock ]; then
-            echo "::error::composer.lock is required for a reproducible release."
-            exit 1
-          fi
-          composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
 
       - name: Install npm dependencies
         if: steps.detect.outputs.npm == 'true'
@@ -102,69 +128,128 @@ jobs:
         if: steps.detect.outputs.npm == 'true'
         run: npm run build --if-present
 
-      - name: Prepare zip
+      - name: Stage package
         env:
           PACKAGE_SLUG: ${{ github.event.repository.name }}
-          EXTRA_EXCLUDES: ${{ inputs.exclude }}
+        run: |
+          # .distignore (rsync exclude syntax) decides what is left out of the package.
+          # The excludes below are a safety net for files that must never be published,
+          # because they leak data (.git/, secrets) or never belong to a WordPress
+          # package. Everything else, including standard dev files, is up to .distignore.
+          stage_root="${RUNNER_TEMP}/wp-package-stage"
+          stage="${stage_root}/${PACKAGE_SLUG}"
+          mkdir -p "$stage"
+          rsync -a \
+            --exclude '.git/' \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude '/auth.json' \
+            --exclude 'node_modules/' \
+            --exclude '.DS_Store' \
+            --exclude 'Thumbs.db' \
+            --exclude-from=.distignore \
+            ./ "$stage/"
+          echo "STAGE_ROOT=${stage_root}" >> "$GITHUB_ENV"
+          echo "STAGE=${stage}" >> "$GITHUB_ENV"
+
+      - name: Validate package
+        run: |
+          errors=0
+          version="${GITHUB_REF_NAME#v}"
+
+          # WordPress reads headers from the first 8 KB of the file. The step runs with
+          # pipefail, so "|| true" keeps a missing header from aborting it.
+          header_value() {
+            head -c 8192 "$1" | tr -d '\r' \
+              | grep -m1 -E "^[[:space:]/*#@]*$2:" \
+              | sed -E "s/^[^:]*:[[:space:]]*//; s/[[:space:]]*$//" || true
+          }
+
+          main_file=""
+          if [ -f "$STAGE/style.css" ] && [ -n "$(header_value "$STAGE/style.css" 'Theme Name')" ]; then
+            main_file="$STAGE/style.css"
+            echo "Theme detected: style.css"
+          else
+            for f in "$STAGE"/*.php; do
+              [ -f "$f" ] || continue
+              if [ -n "$(header_value "$f" 'Plugin Name')" ]; then
+                main_file="$f"
+                echo "Plugin detected: $(basename "$f")"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$main_file" ]; then
+            echo "::error::No plugin file with a 'Plugin Name:' header or style.css with a 'Theme Name:' header in the package root. Check .distignore."
+            errors=1
+          else
+            header_version="$(header_value "$main_file" 'Version')"
+            if [ "$header_version" != "$version" ]; then
+              echo "::error::Tag version ($version) does not match the 'Version:' header in $(basename "$main_file") (${header_version:-missing})."
+              errors=1
+            fi
+          fi
+
+          if [ -f composer.json ] && jq -e '(.autoload // {}) | length > 0' composer.json > /dev/null; then
+            if [ ! -f "$STAGE/vendor/autoload.php" ]; then
+              echo "::error::composer.json defines autoload but vendor/autoload.php is not in the package. Check .distignore."
+              errors=1
+            fi
+          fi
+
+          # Standard dev files are not removed by the workflow, but their presence
+          # usually means .distignore is missing a line.
+          shopt -s nullglob dotglob
+          for path in \
+            "$STAGE"/.github "$STAGE"/.vscode "$STAGE"/.idea "$STAGE"/tests \
+            "$STAGE"/.gitignore "$STAGE"/.gitattributes "$STAGE"/.editorconfig "$STAGE"/.distignore \
+            "$STAGE"/composer.json "$STAGE"/composer.lock "$STAGE"/package.json "$STAGE"/package-lock.json \
+            "$STAGE"/.nvmrc "$STAGE"/.npmrc "$STAGE"/tsconfig.json \
+            "$STAGE"/phpunit.xml* "$STAGE"/phpstan.neon* "$STAGE"/phpcs.xml* "$STAGE"/.phpcs.xml* "$STAGE"/.php-cs-fixer* \
+            "$STAGE"/.eslintrc* "$STAGE"/eslint.config.* "$STAGE"/.prettierrc* "$STAGE"/.stylelintrc* \
+            "$STAGE"/vite.config.* "$STAGE"/webpack.config.* "$STAGE"/postcss.config.* "$STAGE"/tailwind.config.* \
+            "$STAGE"/vendor/bin; do
+            [ -e "$path" ] && echo "::warning::${path#"$STAGE"/} is in the package. Add it to .distignore if it is not needed at runtime."
+          done
+
+          exit "$errors"
+
+      - name: Create zip
+        env:
+          PACKAGE_SLUG: ${{ github.event.repository.name }}
         run: |
           # The zip file is package-slug-1.2.0.zip. A leading "v" on the tag is dropped.
           # The directory inside stays package-slug/, without the version, so WordPress
           # installs and updates plugins and themes in the same folder.
-          # tools/ and vendor/composer/autoload_aliases.php are Strauss build artifacts
-          # (the pinned strauss.phar and the dev-only class-alias shim). Neither belongs in
-          # a release; the exclusions are no-ops for packages that don't use Strauss.
-          # Do not exclude src/ by default: many plugins ship PHP under src/ (PSR-4).
-          # Callers that use src/ only for front-end source should pass exclude: src/.
-          extra_excludes=()
-          while IFS= read -r pattern; do
-            pattern="${pattern#"${pattern%%[![:space:]]*}"}"
-            pattern="${pattern%"${pattern##*[![:space:]]}"}"
-            pattern="${pattern%,}"
-            [ -z "$pattern" ] && continue
-            extra_excludes+=(--exclude "$pattern")
-          done <<< "${EXTRA_EXCLUDES//,/$'\n'}"
-
-          stage="/tmp/wp-package-stage/${PACKAGE_SLUG}"
-          mkdir -p "$stage"
-          rsync -a \
-            --exclude '.git/' \
-            --exclude '.gitignore' \
-            --exclude '.github/' \
-            --exclude '.vscode/' \
-            --exclude '.DS_Store' \
-            --exclude 'tests/' \
-            --exclude 'screenshots/' \
-            --exclude '*.md' \
-            --exclude '*.yml' \
-            --exclude '*.yaml' \
-            --exclude '.env' \
-            --exclude 'node_modules/' \
-            --exclude 'bin/' \
-            --exclude 'tools/' \
-            --exclude 'vendor/bin/' \
-            --exclude 'vendor/composer/autoload_aliases.php' \
-            --exclude 'package-lock.json' \
-            --exclude 'package.json' \
-            --exclude 'vite.config.mjs' \
-            --exclude 'composer.json' \
-            --exclude 'composer.lock' \
-            --exclude 'phpstan.neon' \
-            --exclude 'phpunit.xml' \
-            --exclude '.php-cs-fixer.php' \
-            --exclude '.php-cs-fixer.cache' \
-            "${extra_excludes[@]}" \
-            ./ "$stage/"
           version="${GITHUB_REF_NAME#v}"
-          zip_path="/tmp/${PACKAGE_SLUG}-${version}.zip"
+          zip_path="${RUNNER_TEMP}/${PACKAGE_SLUG}-${version}.zip"
           (
-            cd /tmp/wp-package-stage
-            zip -r "$zip_path" "$PACKAGE_SLUG"
+            cd "$STAGE_ROOT"
+            zip -rq "$zip_path" "$PACKAGE_SLUG"
           )
           echo "ZIP_PATH=${zip_path}" >> "$GITHUB_ENV"
 
+          files="$(cd "$STAGE_ROOT" && find "$PACKAGE_SLUG" -type f | sort)"
+          {
+            echo "### ${PACKAGE_SLUG}-${version}.zip"
+            echo
+            echo "$(echo "$files" | wc -l | tr -d ' ') files, $(du -h "$zip_path" | cut -f1) compressed."
+            echo
+            echo "<details><summary>Files (vendor/ collapsed)</summary>"
+            echo
+            echo '```'
+            echo "$files" | grep -v "^${PACKAGE_SLUG}/vendor/" || true
+            vendor_count="$(echo "$files" | grep -c "^${PACKAGE_SLUG}/vendor/" || true)"
+            [ "$vendor_count" -gt 0 ] && echo "${PACKAGE_SLUG}/vendor/ (${vendor_count} files)"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: ${{ env.ZIP_PATH }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
