@@ -1,0 +1,88 @@
+# Files and directories left out of the release zip.
+# Syntax: rsync exclude patterns. A leading "/" anchors the pattern to the repo root;
+# without it, the pattern matches at any depth, including inside vendor/.
+# Keep patterns anchored unless you really mean "everywhere".
+# Template: cortesfrau/github-workflows/templates/.distignore (plugins and themes)
+
+# Git and CI
+/.git/
+/.github/
+/.gitignore
+/.gitattributes
+/.distignore
+/*.yml
+/*.yaml
+
+# Editor and environment
+/.vscode/
+/.idea/
+/.editorconfig
+/.env
+/.env.*
+
+# Dependency manifests (vendor/ ships, its manifests and binaries do not)
+/composer.json
+/composer.lock
+/auth.json
+/package.json
+/package-lock.json
+/.nvmrc
+/.npmrc
+/node_modules/
+/vendor/bin/
+
+# Quality tooling
+/tests/
+/phpunit.xml
+/phpunit.xml.dist
+/.phpunit.result.cache
+/.phpunit.cache/
+/phpstan.neon
+/phpstan.neon.dist
+/phpcs.xml
+/phpcs.xml.dist
+/.phpcs.xml
+/.phpcs.xml.dist
+/.php-cs-fixer.php
+/.php-cs-fixer.dist.php
+/.php-cs-fixer.cache
+/.eslintrc*
+/eslint.config.*
+/.prettierrc*
+/.stylelintrc*
+
+# Build configuration
+/vite.config.*
+/webpack.config.*
+/tsconfig.json
+/postcss.config.*
+/tailwind.config.*
+
+# WordPress scaffolding and directory assets
+/bin/
+/.wordpress-org/
+
+# Docs (LICENSE files are kept on purpose)
+/README.md
+/CHANGELOG.md
+/CONTRIBUTING.md
+/docs/
+
+# ---------------------------------------------------------------
+# Project-specific. Uncomment or add what applies to this project.
+# ---------------------------------------------------------------
+
+# Strauss: pinned phar and the dev-only class-alias shim
+# /tools/
+# /vendor/composer/autoload_aliases.php
+
+# Front-end sources (SCSS/JS), when the build writes to another folder (e.g. dist/).
+# Never exclude a folder that holds PHP loaded at runtime (e.g. PSR-4 classes in src/).
+# /src/
+# /assets/src/
+
+# Plugin screenshots kept in the repo (themes need screenshot.png in the root: keep it)
+# /screenshots/
+
+# Source maps
+# *.map
