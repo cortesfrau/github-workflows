@@ -20,6 +20,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Require a tag
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -32,6 +33,7 @@ jobs:
         with:
           # Full history, so the next step can check the tag against the default branch.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Require the tag on the default branch
         env:
@@ -52,7 +54,7 @@ jobs:
           NODE_VERSION_INPUT: ${{ inputs.node_version }}
         run: |
           if [ ! -f .distignore ]; then
-            echo "::error::.distignore is required. Copy templates/.distignore from cortesfrau/github-workflows to the repo root and adjust it."
+            echo "::error::.distignore is required. Copy templates/.distignore from cortesfrau/github-workflows to the repo root and adjust it. See 'Migrating to v4' in its README."
             exit 1
           fi
 
@@ -90,6 +92,57 @@ jobs:
               echo "Node.js: 24 (default)"
             fi
           fi
+
+      - name: Extract release notes
+        run: |
+          # The release is titled with the version (tag without its leading "v") and
+          # its body is that version's section of CHANGELOG.md: from its "## " heading
+          # to the next one. Accepted headings: "## [1.2.0] — 2026-05-20",
+          # "## [1.2.0] - 2026-05-20", "## 1.2.0", optionally with "v" before the version.
+          version="${GITHUB_REF_NAME#v}"
+          notes="${RUNNER_TEMP}/release-notes.md"
+
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::CHANGELOG.md is required: the release body is taken from its \"## [${version}]\" section."
+            exit 1
+          fi
+
+          awk -v ver="$version" '
+            /^## / {
+              if (found) exit
+              h = $0
+              sub(/^##[ \t]+/, "", h); sub(/^\[/, "", h); sub(/^v/, "", h)
+              rest = substr(h, length(ver) + 1)
+              if (index(h, ver) == 1 && (rest == "" || rest ~ /^(\]|[ \t])/)) { found = 1; heading = 1 }
+              next
+            }
+            # Link reference definitions ("[1.2.0]: https://...") close the last section.
+            found && /^\[.+\]:[ \t]/ { exit }
+            found { lines[++n] = $0 }
+            END {
+              if (!heading) exit 2
+              first = 1; last = n
+              while (first <= last && lines[first] ~ /^[ \t]*$/) first++
+              while (last >= first && lines[last] ~ /^[ \t]*(---+)?[ \t]*$/) last--
+              for (i = first; i <= last; i++) print lines[i]
+            }
+          ' CHANGELOG.md > "$notes" || status=$?
+
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::error::CHANGELOG.md has no section for ${version}. Add a \"## [${version}] — YYYY-MM-DD\" heading with the changes of this release."
+            exit 1
+          elif [ "${status:-0}" -ne 0 ]; then
+            exit "$status"
+          fi
+          if [ ! -s "$notes" ]; then
+            echo "::error::The ${version} section of CHANGELOG.md is empty. Describe the changes of this release."
+            exit 1
+          fi
+
+          echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "RELEASE_NOTES=${notes}" >> "$GITHUB_ENV"
+          echo "Release notes for ${version}:"
+          cat "$notes"
 
       - name: Setup PHP
         if: steps.detect.outputs.composer == 'true'
@@ -191,9 +244,21 @@ jobs:
             fi
           fi
 
-          if [ -f composer.json ] && jq -e '(.autoload // {}) | length > 0' composer.json > /dev/null; then
-            if [ ! -f "$STAGE/vendor/autoload.php" ]; then
-              echo "::error::composer.json defines autoload but vendor/autoload.php is not in the package. Check .distignore."
+          if [ -f composer.json ]; then
+            if jq -e '(.autoload // {}) | length > 0' composer.json > /dev/null; then
+              if [ ! -f "$STAGE/vendor/autoload.php" ]; then
+                echo "::error::composer.json defines autoload but vendor/autoload.php is not in the package. Check .distignore."
+                errors=1
+              fi
+            fi
+
+            # Strauss (extra.strauss) writes the prefixed dependencies to its target
+            # directory, vendor-prefixed/ unless configured otherwise. It is gitignored
+            # and built by "composer install", so a missing copy means .distignore
+            # dropped it and the plugin would fatal on activation.
+            strauss_dir="$(jq -r 'if .extra.strauss then (.extra.strauss.target_directory // "vendor-prefixed") else empty end' composer.json)"
+            if [ -n "$strauss_dir" ] && [ ! -f "$STAGE/${strauss_dir}/autoload.php" ]; then
+              echo "::error::composer.json configures Strauss but ${strauss_dir}/autoload.php is not in the package. Check .distignore."
               errors=1
             fi
           fi
@@ -202,13 +267,14 @@ jobs:
           # usually means .distignore is missing a line.
           shopt -s nullglob dotglob
           for path in \
-            "$STAGE"/.github "$STAGE"/.vscode "$STAGE"/.idea "$STAGE"/tests \
+            "$STAGE"/.github "$STAGE"/.vscode "$STAGE"/.idea "$STAGE"/.claude "$STAGE"/tests "$STAGE"/plans \
             "$STAGE"/.gitignore "$STAGE"/.gitattributes "$STAGE"/.editorconfig "$STAGE"/.distignore \
             "$STAGE"/composer.json "$STAGE"/composer.lock "$STAGE"/package.json "$STAGE"/package-lock.json \
             "$STAGE"/.nvmrc "$STAGE"/.npmrc "$STAGE"/tsconfig.json \
             "$STAGE"/phpunit.xml* "$STAGE"/phpstan.neon* "$STAGE"/phpcs.xml* "$STAGE"/.phpcs.xml* "$STAGE"/.php-cs-fixer* \
             "$STAGE"/.eslintrc* "$STAGE"/eslint.config.* "$STAGE"/.prettierrc* "$STAGE"/.stylelintrc* \
             "$STAGE"/vite.config.* "$STAGE"/webpack.config.* "$STAGE"/postcss.config.* "$STAGE"/tailwind.config.* \
+            "$STAGE"/tools/strauss.phar "$STAGE"/vendor/composer/autoload_aliases.php \
             "$STAGE"/vendor/bin; do
             [ -e "$path" ] && echo "::warning::${path#"$STAGE"/} is in the package. Add it to .distignore if it is not needed at runtime."
           done
@@ -236,12 +302,16 @@ jobs:
             echo
             echo "$(echo "$files" | wc -l | tr -d ' ') files, $(du -h "$zip_path" | cut -f1) compressed."
             echo
-            echo "<details><summary>Files (vendor/ collapsed)</summary>"
+            echo "<details><summary>Files (vendor/ and vendor-prefixed/ collapsed)</summary>"
             echo
             echo '```'
-            echo "$files" | grep -v "^${PACKAGE_SLUG}/vendor/" || true
-            vendor_count="$(echo "$files" | grep -c "^${PACKAGE_SLUG}/vendor/" || true)"
-            [ "$vendor_count" -gt 0 ] && echo "${PACKAGE_SLUG}/vendor/ (${vendor_count} files)"
+            echo "$files" | grep -v -E "^${PACKAGE_SLUG}/vendor(-prefixed)?/" || true
+            for dir in vendor vendor-prefixed; do
+              count="$(echo "$files" | grep -c "^${PACKAGE_SLUG}/${dir}/" || true)"
+              if [ "$count" -gt 0 ]; then
+                echo "${PACKAGE_SLUG}/${dir}/ (${count} files)"
+              fi
+            done
             echo '```'
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -250,6 +320,8 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: ${{ env.ZIP_PATH }}
+          name: ${{ env.RELEASE_VERSION }}
+          body_path: ${{ env.RELEASE_NOTES }}
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

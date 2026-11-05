@@ -7,11 +7,11 @@ Centralized GitHub Actions workflows for WordPress plugins and themes. Consuming
 Callers pin a major version tag, never `main`:
 
 ```yaml
-uses: cortesfrau/github-workflows/.github/workflows/wp-release.yml@v3
+uses: cortesfrau/github-workflows/.github/workflows/wp-release.yml@v4
 ```
 
-- `v3`, `v2`… move to the latest release of that major version, so callers get fixes without editing anything.
-- `v3.0.0`, `v3.1.0`… are fixed and never move. Pin one of these (or a commit SHA) to opt out of updates.
+- `v4`, `v3`… move to the latest release of that major version, so callers get fixes without editing anything.
+- `v4.0.0`, `v4.1.0`… are fixed and never move. Pin one of these (or a commit SHA) to opt out of updates.
 
 What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -22,12 +22,13 @@ What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 Builds a production zip and creates a GitHub Release with it attached. Works for **plugins and themes**. Triggered by a `v*` tag on the calling repo.
 
 1. Fails unless the caller ref is a tag, the tagged commit is on the repo's default branch (usually `main`) and the repo has a `.distignore`. Tag from the default branch after merging; a tag pushed from another branch does not publish.
-2. With `composer.json`: requires `composer.lock` and runs `composer install --no-dev`.
-3. With `package.json`: requires `package-lock.json`, sets up Node.js (`node_version` input, else `.nvmrc`, else 24), runs `npm ci` and `npm run build` (skipped if there is no `build` script).
-4. Copies the repo into the package folder, leaving out what `.distignore` and the safety net exclude.
-5. Validates the package (see below).
-6. Zips it as `package-name-1.2.0.zip` (a leading `v` on the tag is dropped). The archive contains a single top-level directory named after the repository, without the version, which WordPress needs to install and update the package in place.
-7. Publishes a GitHub Release with the zip, marked as pre-release when the tag contains `-`. The job summary lists the files in the zip.
+2. Takes the release notes from `CHANGELOG.md` (see [Release title and notes](#release-title-and-notes)) and fails if the version has no section.
+3. With `composer.json`: requires `composer.lock` and runs `composer install --no-dev`. Strauss runs from the repo's `post-install-cmd` as usual and builds `vendor-prefixed/`.
+4. With `package.json`: requires `package-lock.json`, sets up Node.js (`node_version` input, else `.nvmrc`, else 24), runs `npm ci` and `npm run build` (skipped if there is no `build` script).
+5. Copies the repo into the package folder, leaving out what `.distignore` and the safety net exclude.
+6. Validates the package (see below).
+7. Zips it as `package-name-1.2.0.zip` (a leading `v` on the tag is dropped). The archive contains a single top-level directory named after the repository, without the version, which WordPress needs to install and update the package in place.
+8. Publishes a GitHub Release titled with the version (`1.2.0`) and the changelog section as its body, with the zip attached, marked as pre-release when the tag contains `-` (`v1.2.0-beta.1`). The job summary lists the files in the zip.
 
 **Inputs:**
 
@@ -36,15 +37,27 @@ Builds a production zip and creates a GitHub Release with it attached. Works for
 | `php_version`  | string | `"8.4"` | PHP version to use for Composer                                                                                          |
 | `node_version` | string | `""`    | Node.js version to use for npm. When empty, the version in the repo's `.nvmrc` is used, or `24` if there is no `.nvmrc`. |
 
+#### Release title and notes
+
+The release is titled with the tag without its leading `v` (`v1.2.0` → `1.2.0`). Its body is that version's section of `CHANGELOG.md` in the repo root: everything between its `## ` heading and the next `## ` heading, without trailing `---` separators. These headings are recognised:
+
+```markdown
+## [1.2.0] - 2026-05-20
+## [1.2.0] — 2026-05-20
+## 1.2.0
+```
+
+The job fails before building anything if `CHANGELOG.md` is missing, has no section for the version or the section is empty. Write the section, with its date, in the same pull request that bumps the `Version:` header.
+
 #### What goes into the zip: `.distignore`
 
 Every calling repo has a `.distignore` at its root listing everything that is **not** shipped. It is the single source of truth: reading it tells you exactly what the zip contains. The file name follows the WordPress convention also used by `wp dist-archive`.
 
-Start from [`templates/.distignore`](templates/.distignore), the same template for plugins and themes, and uncomment or add what is specific to the project.
+Start from [`templates/.distignore`](templates/.distignore), the same template for plugins and themes, and uncomment or add what is specific to the project. The template already handles Strauss: it excludes `/tools/` and `/vendor/composer/autoload_aliases.php` and keeps `vendor-prefixed/`.
 
-The syntax is rsync exclude patterns. **A leading `/` anchors the pattern to the repo root; without it, the pattern matches at any depth, including inside `vendor/`.** `src/` would remove `vendor/*/src/` and break every PSR-4 dependency, so use `/src/`. Leave a pattern unanchored only when you mean "everywhere" (e.g. `*.map`).
+The syntax is rsync exclude patterns. **A leading `/` anchors the pattern to the repo root; without it, the pattern matches at any depth, including inside `vendor/`.** `src/` would remove `vendor/*/src/` and break every PSR-4 dependency, so use `/src/`. Leave a pattern unanchored only when you mean "everywhere" (e.g. `*.map`). A line starting with `+ ` re-includes what a later rule would exclude; the first matching rule wins.
 
-Criteria for the template: a pattern is active in the template only if no plugin or theme ever needs it at runtime and its name is a convention of the ecosystem (git, Composer, npm, WordPress, QA tools). Anything that depends on the project (`/src/`, Strauss's `/tools/`, `/screenshots/`) is left commented out or added per repo. The template never excludes `LICENSE*` files.
+Criteria for the template: a pattern is active only if no plugin or theme ever needs it at runtime and its name is a convention of the ecosystem (git, Composer, npm, Strauss, WordPress, QA tools, translation sources, root Markdown docs). Anything that depends on the project (`/src/`, `/screenshots/`) is left commented out or added per repo. The template never excludes `LICENSE*` files or `readme.txt`.
 
 #### Safety net
 
@@ -61,8 +74,9 @@ Before publishing, the job fails if:
 - The package root has no PHP file with a `Plugin Name:` header and no `style.css` with a `Theme Name:` header.
 - The `Version:` header of that file does not match the tag without its leading `v` (`v1.2.0` → `1.2.0`, `v1.2.0-beta.1` → `1.2.0-beta.1`).
 - `composer.json` defines `autoload` but `vendor/autoload.php` is not in the package.
+- `composer.json` configures Strauss (`extra.strauss`) but `vendor-prefixed/autoload.php` (or the configured `target_directory`) is not in the package.
 
-It also emits a warning for each standard dev file found in the package root (`composer.json`, `phpunit.xml*`, `vite.config.*`, `tests/`…), which usually means `.distignore` is missing a line or is older than the template.
+It also emits a warning for each standard dev file found in the package (`composer.json`, `phpunit.xml*`, `vite.config.*`, `tests/`, `tools/strauss.phar`…), which usually means `.distignore` is missing a line or is older than the template.
 
 **Usage:**
 
@@ -79,30 +93,32 @@ permissions:
 
 jobs:
   release:
-    uses: cortesfrau/github-workflows/.github/workflows/wp-release.yml@v3
+    uses: cortesfrau/github-workflows/.github/workflows/wp-release.yml@v4
     secrets: inherit
 ```
 
 With a different PHP or Node.js version (for Node.js, a `.nvmrc` in the repo is preferred):
 
 ```yaml
-uses: cortesfrau/github-workflows/.github/workflows/wp-release.yml@v3
+uses: cortesfrau/github-workflows/.github/workflows/wp-release.yml@v4
 with:
   php_version: "8.3"
   node_version: "22"
 secrets: inherit
 ```
 
-#### Migrating from v2
+#### Migrating to v4
 
-1. Copy `templates/.distignore` to the repo root.
-2. Move what you passed in `exclude:` into `.distignore`, anchored with `/` (`src/` → `/src/`).
-3. Strauss projects: uncomment `/tools/` and `/vendor/composer/autoload_aliases.php`. Repos with `screenshots/`: uncomment `/screenshots/`. v2 excluded these by default.
-4. Remove `exclude`, `has_composer` and `has_package_json` from the caller. v3 does not accept them and the run fails if they are passed.
-5. Make sure `package-lock.json` is committed if the repo has a `package.json`.
-6. Check the Node.js version: it now comes from `.nvmrc` when the repo has one, or defaults to 24 (was 22). Prefer committing a `.nvmrc` over passing `node_version`, so CI builds with the same version as local development.
-7. Tag releases from the default branch only. v3 refuses tags whose commit is not on it.
-8. Change `@v2` to `@v3` and check the job summary of the first release.
+v4 is required: `@main`, `@v2` and `@v3` get no fixes, and a repo that calls `@main` breaks whenever this repository changes. For each repo that calls `wp-release.yml`:
+
+1. `CHANGELOG.md` in the repo root, with a section for the version you are about to tag (see [Release title and notes](#release-title-and-notes)). v4 fails without it.
+2. `.distignore` in the repo root:
+   - No `.distignore` yet (callers of `@main` or `@v2`): copy [`templates/.distignore`](templates/.distignore). Move anything passed in `exclude:` into it, anchored with `/` (`src/` → `/src/`). Uncomment `/screenshots/` if the repo has that folder.
+   - Copied from the v3 template: update it to the current one. It now excludes `.po`/`.pot`, `/.claude/`, `/plans/` and every root `*.md`, and the Strauss lines are active.
+3. Remove `exclude`, `has_composer` and `has_package_json` from the caller, if present. The run fails if they are passed.
+4. If the repo has a `package.json`, commit `package-lock.json`. Node.js comes from `.nvmrc`, or defaults to 24: prefer committing a `.nvmrc` over passing `node_version`, so CI builds with the same version as local development.
+5. Tag releases from the default branch only. Tags whose commit is not on it are refused.
+6. Change the caller to `@v4` and check the job summary of the first release: the files in the zip, and the release title and notes.
 
 ## Required secrets
 
@@ -126,16 +142,16 @@ Actions used by the workflows are pinned to a commit SHA, with the version in a 
 
 Every pull request that changes a workflow adds its entry under `## [Unreleased]` in `CHANGELOG.md`.
 
-When releasing (example for `v3.1.0`):
+When releasing (example for `v4.1.0`):
 
-1. Rename `## [Unreleased]` to `## [3.1.0] - YYYY-MM-DD`, add a new empty `## [Unreleased]` above it and update the compare links at the bottom. Do it in the pull request when it is the release, or in a commit on `main` before tagging.
+1. Rename `## [Unreleased]` to `## [4.1.0] - YYYY-MM-DD`, add a new empty `## [Unreleased]` above it and update the compare links at the bottom. Do it in the pull request when it is the release, or in a commit on `main` before tagging.
 2. After merging, tag `main` and move the major tag:
 
 ```bash
 git switch main && git pull
-git tag -a v3.1.0 -m "v3.1.0: what changed"
-git tag -fa v3 -m "v3: latest v3.x release"
-git push origin v3.1.0 && git push --force origin v3
+git tag -a v4.1.0 -m "v4.1.0: what changed"
+git tag -fa v4 -m "v4: latest v4.x release"
+git push origin v4.1.0 && git push --force origin v4
 ```
 
-For a new major version, create `v4.0.0` and `v4` instead and leave `v3` where it is.
+For a new major version, create `v5.0.0` and `v5` instead and leave `v4` where it is.
