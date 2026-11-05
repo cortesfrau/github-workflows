@@ -2,9 +2,29 @@
 
 All notable changes to the workflows in this repository. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/) as described in the [versioning rule](README.md#versioning-rule).
 
-Callers pin the major tag (`@v3`), which always points to the latest release listed here for that major version.
+Callers pin the major tag (`@v4`), which always points to the latest release listed here for that major version.
 
 ## [Unreleased]
+
+---
+
+## [4.0.0] - 2026-11-05
+
+### Added
+
+- **Breaking:** the release is titled with the version (`1.2.0`, without the `v`) and its body is that version's section of `CHANGELOG.md`. The job fails before building if `CHANGELOG.md` is missing, has no section for the version or the section is empty. Accepted headings: `## [1.2.0] - 2026-05-20`, `## [1.2.0] — 2026-05-20` and `## 1.2.0`.
+- Package validation: the job fails if `composer.json` configures Strauss (`extra.strauss`) and `vendor-prefixed/autoload.php` (or the configured `target_directory`) is not in the package.
+- Warnings for `.claude/`, `plans/`, `tools/strauss.phar` and `vendor/composer/autoload_aliases.php` found in the package.
+
+### Changed
+
+- `templates/.distignore`:
+  - excludes `/languages/*.po` and `/languages/*.pot`, the translation sources: WordPress only loads the compiled `.mo`, `.l10n.php` and `.json` files. Delete both lines if translations are edited on the site (e.g. with Loco Translate, which needs the `.pot`);
+  - excludes `/.claude/` and `/plans/`;
+  - excludes every Markdown file in the root (`/*.md`: README, CHANGELOG, AGENTS, CLAUDE…) instead of a fixed list, and keeps `LICENSE*` with a `+ /LICENSE*` rule;
+  - Strauss lines (`/tools/`, `/vendor/composer/autoload_aliases.php`) are active instead of commented out. They are no-ops in repos that don't use Strauss.
+- The job times out after 20 minutes, and the checkout does not keep the token in the repo's git config.
+- The job summary also collapses `vendor-prefixed/`.
 
 ---
 
@@ -63,7 +83,8 @@ First tagged release.
 
 ---
 
-[Unreleased]: https://github.com/cortesfrau/github-workflows/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/cortesfrau/github-workflows/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/cortesfrau/github-workflows/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/cortesfrau/github-workflows/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/cortesfrau/github-workflows/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/cortesfrau/github-workflows/releases/tag/v1.0.0

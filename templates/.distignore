@@ -13,9 +13,10 @@
 /*.yml
 /*.yaml
 
-# Editor and environment
+# Editor, agents and environment
 /.vscode/
 /.idea/
+/.claude/
 /.editorconfig
 /.env
 /.env.*
@@ -30,6 +31,12 @@
 /.npmrc
 /node_modules/
 /vendor/bin/
+
+# Strauss: the pinned phar, its helper scripts and the dev-only class-alias shim.
+# vendor-prefixed/ is NOT listed: it holds the prefixed dependencies and must ship.
+# Both lines are no-ops in repos that don't use Strauss.
+/tools/
+/vendor/composer/autoload_aliases.php
 
 # Quality tooling
 /tests/
@@ -62,19 +69,23 @@
 /bin/
 /.wordpress-org/
 
-# Docs (LICENSE files are kept on purpose)
-/README.md
-/CHANGELOG.md
-/CONTRIBUTING.md
+# Translations: WordPress only loads the compiled .mo, .l10n.php and .json files.
+# .po and .pot are their sources. Keep them (delete these lines) if translations
+# are edited on the site, e.g. with Loco Translate, which needs the .pot.
+/languages/*.pot
+/languages/*.po
+
+# Docs: every Markdown file in the root (README, CHANGELOG, AGENTS, CLAUDE...).
+# readme.txt and LICENSE files are kept on purpose: the "+ " rule re-includes a
+# root LICENSE.md and must stay above "/*.md" (the first matching rule wins).
++ /LICENSE*
+/*.md
 /docs/
+/plans/
 
 # ---------------------------------------------------------------
 # Project-specific. Uncomment or add what applies to this project.
 # ---------------------------------------------------------------
-
-# Strauss: pinned phar and the dev-only class-alias shim
-# /tools/
-# /vendor/composer/autoload_aliases.php
 
 # Front-end sources (SCSS/JS), when the build writes to another folder (e.g. dist/).
 # Never exclude a folder that holds PHP loaded at runtime (e.g. PSR-4 classes in src/).
